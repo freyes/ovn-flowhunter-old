@@ -5,6 +5,13 @@ import sys
 import time
 
 
+VLOG_DESTINATION = {
+    'console': 0,
+    'syslog': 1,
+    'file': 2
+}
+
+
 def extract_flow_from_logline(line: str) -> str:
     """Extract flow from debug log.
 
@@ -72,20 +79,44 @@ def check_ofctl(expected_flows: set):
         print('All flows installed!')
 
 
-with open('/var/log/ovn/ovn-controller.log') as logf:
-    # Seek to EOF
-    logf.seek(0, 2)
-    expected_flows = set()
-    while True:
-        line = logf.readline()
-        if not line or not line.endswith('\n'):
-            time.sleep(0.025)
-            print('expected_flows: {}'.format(len(expected_flows)))
-            continue
-        if 'ofctrl_put not needed' in line and len(expected_flows):
-            check_ofctl(expected_flows)
-        if 'ofctrl_add_flow' in line and 'table_id=20' in line:
-            expected_flows.add(extract_flow_from_logline(line))
-        if 'removing installed flow' in line and 'table_id=20' in line:
-            expected_flows.remove(extract_flow_from_logline(line))
+def vlog_get(module: str, destination: str='file',
+             daemon: str='ovn-controller') -> str:
+    stdout = subprocess.check_output(['sudo', 'ovn-appctl', '-t', daemon,
+                                      'vlog/list'], universal_newlines=True)
+    for line in stdout.split('\n'):
+        if line.startswith(module):
+            tokens = line.split()
+            return tokens[VLOG_DESTINATION[destination]]
 
+
+def vlog_set(module: str, level: str, destination: str='file',
+             daemon: str='ovn-controller') -> str:
+    subprocess.check_call(['sudo', 'ovn-appctl', '-t', daemon,
+                           'vlog/set', f'{module}:{destination}:{level}'])
+
+
+def main():
+    with open('/var/log/ovn/ovn-controller.log') as logf:
+        # Seek to EOF
+        logf.seek(0, 2)
+        expected_flows = set()
+        while True:
+            line = logf.readline()
+            if not line or not line.endswith('\n'):
+                time.sleep(0.025)
+                print('expected_flows: {}'.format(len(expected_flows)))
+                continue
+            if 'ofctrl_put not needed' in line and len(expected_flows):
+                check_ofctl(expected_flows)
+            if 'ofctrl_add_flow' in line and 'table_id=20' in line:
+                expected_flows.add(extract_flow_from_logline(line))
+            if 'removing installed flow' in line and 'table_id=20' in line:
+                expected_flows.remove(extract_flow_from_logline(line))
+
+if __name__ == '__main__':
+    current_vlog_level = vlog_get('ofctrl')
+    try:
+        vlog_set('ofctrl', 'dbg')
+        main()
+    finally:
+        vlog_set('ofctrl', current_vlog_level)

@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 
+import io
 import subprocess
 import sys
 import time
@@ -10,6 +11,10 @@ VLOG_DESTINATION = {
     'syslog': 1,
     'file': 2
 }
+
+
+class MissingFlows(Exception):
+    pass
 
 
 def extract_flow_from_logline(line: str) -> str:
@@ -23,7 +28,7 @@ def extract_flow_from_logline(line: str) -> str:
     'cookie=33d9a01c, table_id=20, priority=100, '
     'reg0=0xac10005b,reg15=0x3,metadata=0x144, '
     'actions=set_field:fa:16:3e:5b:d3:19->eth_dst,resubmit(,21)'
-    
+
     Example output:
     'cookie=0x33d9a01c,table=20,priority=100,reg0=0xac10005b,reg15=0x3,'
     'metadata=0x144,actions=set_field:fa:16:3e:5b:d3:19->eth_dst,resubmit(,21)'
@@ -64,6 +69,27 @@ def extract_flow_from_ofctl(line: str) -> str:
     return ','.join(kv_pairs)
 
 
+def extract_flow_from_ovs_logline(line:str):
+    """Extract flow from ovs-vswitchd.log.
+
+    Example input:
+    '2022-02-14T21:50:28.287Z|00356|vconn|DBG|unix#3: received: OFPT_FLOW_MOD '
+    '(OF1.3) (xid=0x36c): ADD table:20 priority=100,reg0=0xc0a815dd,reg15=0x3,'
+    'metadata=0x2 cookie:0x507e59f3 '
+    'actions=set_field:fa:16:3e:fb:18:f3->eth_dst,resubmit(,21)'
+
+    Example output:
+    'cookie=0x507e59f3,table=20,priority=100,reg0=0xc0a815dd,reg15=0x3,'
+    'metadata=0x2,actions=set_field:fa:16:3e:fb:18:f3->eth_dst,resubmit(,21)'
+    """
+    flow_line = line.split(' ADD ', maxsplit=1)[1]
+    tokens = flow_line.split(' ')
+    table = tokens[0].replace(':', '=')
+    cookie = tokens[2].replace(':', '=')
+
+    return ','.join([cookie, table, tokens[1], tokens[3]])
+
+
 def check_ofctl(expected_flows: set):
     cp = subprocess.run(
         ('ovs-ofctl', '-O', 'OpenFlow15', 'dump-flows', 'br-int', 'table=20'),
@@ -75,6 +101,7 @@ def check_ofctl(expected_flows: set):
     missing_flows = expected_flows.difference(ofctl_flows)
     if missing_flows:
         print('MISSING FLOWS: {}'.format(missing_flows))
+        raise MissingFlows(missing_flows)
     else:
         print('All flows installed!')
 
@@ -95,23 +122,37 @@ def vlog_set(module: str, level: str, destination: str='file',
                            'vlog/set', f'{module}:{destination}:{level}'])
 
 
-def main():
-    with open('/var/log/ovn/ovn-controller.log') as logf:
-        # Seek to EOF
-        logf.seek(0, 2)
-        expected_flows = set()
-        while True:
-            line = logf.readline()
-            if not line or not line.endswith('\n'):
-                time.sleep(0.025)
-                print('expected_flows: {}'.format(len(expected_flows)))
-                continue
-            if 'ofctrl_put not needed' in line and len(expected_flows):
+def loop(ovn_logf: io.TextIOBase, ovs_logf: io.TextIOBase):
+    # Seek to EOF
+    ovn_logf.seek(0, 2)
+    ovs_logf.seek(0, 2)
+    expected_flows = set()
+    while True:
+        ovn_line = ovn_logf.readline()
+        if not ovn_line or not ovn_line.endswith('\n'):
+            time.sleep(0.025)
+            print('expected_flows: {}'.format(len(expected_flows)))
+            continue
+        if 'ofctrl_put not needed' in ovn_line and len(expected_flows):
+            try:
                 check_ofctl(expected_flows)
-            if 'ofctrl_add_flow' in line and 'table_id=20' in line:
-                expected_flows.add(extract_flow_from_logline(line))
-            if 'removing installed flow' in line and 'table_id=20' in line:
-                expected_flows.remove(extract_flow_from_logline(line))
+            except MissingFlows as ex:
+                # TODO(freyes): look for the missing flows in OVS logs.
+                pass
+        if 'ofctrl_add_flow' in ovn_line and 'table_id=20' in ovn_line:
+            expected_flows.add(extract_flow_from_logline(ovn_line))
+        if 'removing installed flow' in ovn_line and 'table_id=20' in ovn_line:
+            expected_flows.remove(extract_flow_from_logline(ovn_line))
+
+def main():
+    ovn_logf = open('/var/log/ovn/ovn-controller.log')
+    ovs_logf = open('/var/log/openvswitch/ovs-vswitchd.log')
+    try:
+        loop(ovn_logf, ovs_logf)
+    finally:
+        ovn_logf.close()
+        ovs_logf.close()
+
 
 if __name__ == '__main__':
     current_vlog_level = vlog_get('ofctrl')

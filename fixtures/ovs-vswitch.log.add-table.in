@@ -1,0 +1,2 @@
+2022-02-14T21:50:28.287Z|00356|vconn|DBG|unix#3: received: OFPT_FLOW_MOD (OF1.3) (xid=0x36c): ADD table:20 priority=100,reg0=0xc0a815dd,reg15=0x3,metadata=0x2 cookie:0x507e59f3 actions=set_field:fa:16:3e:fb:18:f3->eth_dst,resubmit(,21)
+2022-02-14T21:50:30.081Z|00390|vconn|DBG|unix#3: received: OFPT_FLOW_MOD (OF1.3) (xid=0x38d): ADD table:20 priority=100,reg0=0xc0a815cd,reg15=0x3,metadata=0x2 cookie:0x3cd0bd54 actions=set_field:fa:16:3e:47:e3:b4->eth_dst,resubmit(,21)
